@@ -7,6 +7,8 @@ from fastapi import FastAPI, Request, Response
 from src.bot.setup import bot, dp, setup_bot
 from src.config import settings
 from src.database import Base, engine
+import src.models  # noqa: F401 — register all models with Base
+from src.scheduler import setup_scheduler, scheduler
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,8 +22,10 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     await setup_bot()
+    setup_scheduler()
     logger.info("Service started")
     yield
+    scheduler.shutdown(wait=False)
     await bot.session.close()
     await engine.dispose()
     logger.info("Service stopped")
