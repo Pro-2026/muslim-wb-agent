@@ -33,11 +33,25 @@ async def _pull_all_clients() -> None:
             logger.info("Pull OK client=%d: %d campaigns, %d keywords", client.id, campaigns, keywords)
         except Exception as e:
             logger.exception("Pull failed for client %d: %s", client.id, e)
-            try:
-                await bot.send_message(
-                    settings.admin_user_id,
-                    f"Ошибка синхронизации WB: <code>{e}</code>",
+            err = str(e).lower()
+            if "401" in err or "unauthorized" in err or "token" in err or "forbidden" in err:
+                msg = (
+                    "⚠️ WB API токен сломан или истёк.\n\n"
+                    "Зайди в личный кабинет WB → Настройки → Доступ к API → "
+                    "создай новый токен и скинь мне."
                 )
+            elif "429" in err or "rate" in err:
+                msg = "⚠️ WB API временно недоступен (лимит запросов). Попробую снова через 3 часа."
+            elif "timeout" in err or "connect" in err or "network" in err:
+                msg = "⚠️ WB API не отвечает — проблемы с сетью или WB лежит. Попробую снова через 3 часа."
+            else:
+                msg = (
+                    f"⚠️ Ошибка синхронизации с WB.\n\n"
+                    f"Попробуй /pull вручную. Если не помогает — скинь это:\n"
+                    f"<code>{str(e)[:200]}</code>"
+                )
+            try:
+                await bot.send_message(settings.admin_user_id, msg)
             except Exception:
                 pass
 
