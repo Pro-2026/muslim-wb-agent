@@ -22,6 +22,7 @@ from src.models import (
     DecisionWho,
     Feedback,
     Keyword,
+    KeywordMetric,
 )
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,8 @@ async def cmd_start(message: Message) -> None:
         "/pull — синхронизация с WB\n"
         "/classify — классифицировать кластеры через AI\n"
         "/review — проверить предложения AI\n"
+        "/apply — применить подтверждённые удаления\n"
+        "/bids — рекомендации по ставкам\n"
         "/status — состояние сервиса\n"
         "/stop — аварийная остановка"
     )
@@ -309,3 +312,196 @@ async def on_decision_callback(callback: CallbackQuery) -> None:
         await callback.message.edit_text(
             callback.message.text + f"\n\n✅ {label}"
         )
+
+
+# ─── /apply ───────────────────────────────────────────────────────────────────
+
+@router.message(Command("apply"))
+async def cmd_apply(message: Message) -> None:
+    if not _admin_only(message):
+        return
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(Decision, Keyword)
+            .join(Keyword)
+            .where(
+                Decision.who == DecisionWho.human,
+                Decision.decision == DecisionType.remove,
+                Decision.status == DecisionStatus.pending,
+                Decision.expires_at > now,
+            )
+        )
+        rows = result.all()
+
+    if not rows:
+        await message.answer("Нет подтверждённых удалений для применения.")
+        return
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=f"Да, удалить {len(rows)} кластеров", callback_data="apply:confirm"),
+        InlineKeyboardButton(text="Отмена", callback_data="apply:cancel"),
+    ]])
+    phrases = "\n".join(f"- {kw.phrase}" for _, kw in rows[:10])
+    tail = f"\n... и ещё {len(rows) - 10}" if len(rows) > 10 else ""
+    await message.answer(
+        f"Применить {len(rows)} удалений?\n\n{phrases}{tail}",
+        reply_markup=kb,
+    )
+
+
+@router.callback_query(F.data.startswith("apply:"))
+async def on_apply_callback(callback: CallbackQuery) -> None:
+    if not callback.from_user or callback.from_user.id != settings.admin_user_id:
+        await callback.answer("Нет доступа")
+        return
+
+    action = callback.data.split(":")[1]
+    if action == "cancel":
+        await callback.answer("Отменено")
+        if callback.message:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        return
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(Decision, Keyword, Campaign)
+            .join(Keyword, Keyword.id == Decision.keyword_id)
+            .join(Campaign, Campaign.id == Keyword.campaign_id)
+            .where(
+                Decision.who == DecisionWho.human,
+                Decision.decision == DecisionType.remove,
+                Decision.status == DecisionStatus.pending,
+                Decision.expires_at > now,
+            )
+        )
+        rows = result.all()
+
+    if not rows:
+        await callback.answer("Нет записей")
+        return
+
+    from src.wb.client import WBClient
+    from src.models import Client as ClientModel
+
+    async with AsyncSessionLocal() as session:
+        clients_result = await session.execute(select(ClientModel))
+        clients_map = {c.id: c for c in clients_result.scalars().all()}
+
+    applied, failed = 0, 0
+    for decision, keyword, campaign in rows:
+        client = clients_map.get(campaign.client_id)
+        if not client:
+            continue
+        wb = WBClient(client.wb_token)
+        try:
+            await wb.exclude_keyword(campaign.wb_id, keyword.phrase)
+            async with AsyncSessionLocal() as session:
+                dec = await session.get(Decision, decision.id)
+                if dec:
+                    dec.status = DecisionStatus.applied
+                    await session.commit()
+            applied += 1
+        except Exception as e:
+            logger.error("exclude_keyword failed: %s", e)
+            async with AsyncSessionLocal() as session:
+                dec = await session.get(Decision, decision.id)
+                if dec:
+                    dec.status = DecisionStatus.failed
+                    await session.commit()
+            failed += 1
+        finally:
+            await wb.close()
+
+    await callback.answer("Готово")
+    if callback.message:
+        await callback.message.edit_reply_markup(reply_markup=None)
+        await callback.message.edit_text(
+            f"Применено: удалено {applied} кластеров, ошибок {failed}."
+        )
+
+
+# ─── /bids ────────────────────────────────────────────────────────────────────
+
+@router.message(Command("bids"))
+async def cmd_bids(message: Message) -> None:
+    if not _admin_only(message):
+        return
+
+    from src.rules.bidding import calculate_bid_action, BidAction
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(Keyword, KeywordMetric)
+            .join(KeywordMetric, KeywordMetric.keyword_id == Keyword.id)
+            .order_by(KeywordMetric.date.desc())
+            .limit(100)
+        )
+        rows = result.all()
+
+    if not rows:
+        await message.answer("Нет метрик. Сначала /pull.")
+        return
+
+    # Агрегируем последние метрики по каждому кластеру
+    seen: set[int] = set()
+    recommendations = []
+    for keyword, metric in rows:
+        if keyword.id in seen:
+            continue
+        seen.add(keyword.id)
+        rec = calculate_bid_action(
+            current_bid=100,  # заглушка — реальные ставки из WB API (Фаза 3+)
+            views=metric.views,
+            clicks=metric.clicks,
+            orders=metric.orders,
+            spend=metric.spend,
+        )
+        if rec.action != BidAction.keep:
+            recommendations.append((keyword, metric, rec))
+
+    if not recommendations:
+        await message.answer("Все ставки в норме — изменений не требуется.")
+        return
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=f"Применить все ({len(recommendations)})", callback_data="bids:all"),
+        InlineKeyboardButton(text="Отклонить всё", callback_data="bids:reject"),
+    ]])
+
+    lines = []
+    for keyword, metric, rec in recommendations[:15]:
+        arrow = "▲" if rec.action == BidAction.increase else "▼"
+        lines.append(
+            f"{arrow} <b>{keyword.phrase}</b>\n"
+            f"   {rec.current_bid}р → {rec.new_bid}р | {rec.reason}"
+        )
+
+    tail = f"\n\n...и ещё {len(recommendations) - 15}" if len(recommendations) > 15 else ""
+    await message.answer(
+        "Рекомендации по ставкам:\n\n" + "\n\n".join(lines) + tail,
+        reply_markup=kb,
+    )
+
+
+@router.callback_query(F.data.startswith("bids:"))
+async def on_bids_callback(callback: CallbackQuery) -> None:
+    if not callback.from_user or callback.from_user.id != settings.admin_user_id:
+        await callback.answer("Нет доступа")
+        return
+
+    action = callback.data.split(":")[1]
+    if action == "reject":
+        await callback.answer("Отклонено")
+        if callback.message:
+            await callback.message.edit_reply_markup(reply_markup=None)
+            await callback.message.edit_text(callback.message.text + "\n\n❌ Отклонено")
+        return
+
+    # action == "all" — применяем (заглушка до получения реальных ставок из WB)
+    await callback.answer("Ставки применены (тест-режим)")
+    if callback.message:
+        await callback.message.edit_reply_markup(reply_markup=None)
+        await callback.message.edit_text(callback.message.text + "\n\n✅ Ставки применены")
