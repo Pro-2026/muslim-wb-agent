@@ -1,6 +1,8 @@
 import logging
 from contextlib import asynccontextmanager
 
+import sentry_sdk
+
 from aiogram.types import Update
 from fastapi import FastAPI, Request, Response
 
@@ -15,6 +17,10 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+if settings.sentry_dsn:
+    sentry_sdk.init(dsn=settings.sentry_dsn, traces_sample_rate=0.1)
+    logger.info("Sentry initialized")
 
 
 @asynccontextmanager

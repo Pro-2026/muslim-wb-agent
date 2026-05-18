@@ -2,6 +2,7 @@ import logging
 from datetime import datetime, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import select, update
 
@@ -60,6 +61,24 @@ async def _expire_stale_decisions() -> None:
         logger.info("Expired %d stale decisions", len(expired_ids))
 
 
+async def _send_daily_report() -> None:
+    from src.ai.reporter import generate_daily_report
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+    try:
+        report = await generate_daily_report()
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="Детали", callback_data="report:details"),
+        ]])
+        await bot.send_message(settings.admin_user_id, report, reply_markup=kb)
+    except Exception as e:
+        logger.exception("Daily report failed: %s", e)
+        try:
+            await bot.send_message(settings.admin_user_id, f"Ошибка генерации отчёта: <code>{e}</code>")
+        except Exception:
+            pass
+
+
 def setup_scheduler() -> None:
     scheduler.add_job(
         _pull_all_clients,
@@ -73,5 +92,11 @@ def setup_scheduler() -> None:
         id="expire_decisions",
         replace_existing=True,
     )
+    scheduler.add_job(
+        _send_daily_report,
+        trigger=CronTrigger(hour=9, minute=0, timezone="Europe/Moscow"),
+        id="daily_report",
+        replace_existing=True,
+    )
     scheduler.start()
-    logger.info("Scheduler started: WB pull + TTL expiry every 3h")
+    logger.info("Scheduler started: pull 3h, expiry 3h, report 09:00 MSK")

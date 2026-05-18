@@ -505,3 +505,33 @@ async def on_bids_callback(callback: CallbackQuery) -> None:
     if callback.message:
         await callback.message.edit_reply_markup(reply_markup=None)
         await callback.message.edit_text(callback.message.text + "\n\n✅ Ставки применены")
+
+
+# ─── /report ──────────────────────────────────────────────────────────────────
+
+@router.message(Command("report"))
+async def cmd_report(message: Message) -> None:
+    if not _admin_only(message):
+        return
+    await message.answer("Генерирую отчёт...")
+    from src.ai.reporter import generate_daily_report
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    try:
+        report = await generate_daily_report()
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="Детали", callback_data="report:details"),
+        ]])
+        await message.answer(report, reply_markup=kb)
+    except Exception as e:
+        await message.answer(f"Ошибка: {e}")
+
+
+@router.callback_query(F.data == "report:details")
+async def on_report_details(callback: CallbackQuery) -> None:
+    if not callback.from_user or callback.from_user.id != settings.admin_user_id:
+        await callback.answer("Нет доступа")
+        return
+    await callback.answer()
+    await callback.message.answer(
+        "Детализация:\n/bids — ставки\n/review — предложения AI\n/pull — свежие данные"
+    )

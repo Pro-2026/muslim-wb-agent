@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     # WB API
     wb_token: str = ""
 
+    # Sentry (опционально)
+    sentry_dsn: str = ""
+
     # Railway (проставляется автоматически при деплое)
     railway_public_domain: str = ""
 
