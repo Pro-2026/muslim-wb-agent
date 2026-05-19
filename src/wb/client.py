@@ -32,8 +32,8 @@ class WBClient:
             try:
                 resp = await self._client.request(method, path, **kwargs)
                 if resp.status_code == 429:
-                    wait = 2 ** attempt
-                    logger.warning("WB rate limit, retry in %ds", wait)
+                    wait = 60 * (attempt + 1)
+                    logger.warning("WB rate limit 429, retry in %ds", wait)
                     await asyncio.sleep(wait)
                     continue
                 if resp.status_code >= 500:
@@ -42,17 +42,37 @@ class WBClient:
                     await asyncio.sleep(wait)
                     continue
                 resp.raise_for_status()
-                logger.debug("WB %s %s → %d", method, path, resp.status_code)
+                logger.debug("WB %s %s -> %d", method, path, resp.status_code)
                 return resp.json()
             except httpx.HTTPStatusError as e:
                 if attempt == 3:
-                    raise WBApiError(f"WB API error: {e}") from e
+                    raise WBApiError(f"WB API error {e.response.status_code}: {e.response.text[:200]}") from e
         raise WBApiError("WB API: max retries exceeded")
 
     async def get_campaigns(self) -> list[dict]:
-        """Список всех рекламных кампаний."""
-        data = await self._request("GET", "/adv/v1/promotion/adverts")
-        return data if isinstance(data, list) else []
+        """
+        Шаг 1: получить все ID кампаний через /count.
+        Шаг 2: получить детали батчами по 50 через POST /adverts.
+        """
+        count_data = await self._request("GET", "/adv/v1/promotion/count")
+
+        all_ids: list[int] = []
+        for group in count_data.get("adverts", []):
+            for item in group.get("advert_list", []):
+                all_ids.append(item["advertId"])
+
+        if not all_ids:
+            return []
+
+        campaigns: list[dict] = []
+        for i in range(0, len(all_ids), 50):
+            batch = all_ids[i:i + 50]
+            data = await self._request("POST", "/adv/v1/promotion/adverts", json=batch)
+            if isinstance(data, list):
+                campaigns.extend(data)
+            await asyncio.sleep(_RATE_LIMIT_SLEEP)
+
+        return campaigns
 
     async def get_campaign_stats(
         self, campaign_id: int, date_from: date, date_to: date
@@ -61,39 +81,27 @@ class WBClient:
         data = await self._request(
             "POST",
             "/adv/v2/fullstats",
-            json=[
-                {
-                    "id": campaign_id,
-                    "dates": [date_from.isoformat(), date_to.isoformat()],
-                }
-            ],
+            json=[{"id": campaign_id, "dates": [date_from.isoformat(), date_to.isoformat()]}],
         )
         return data if isinstance(data, list) else []
 
     async def get_keywords(self, campaign_id: int) -> list[dict]:
-        """Поисковые кластеры с метриками по кампании."""
-        data = await self._request(
-            "GET",
-            "/adv/v1/stat/words",
-            params={"id": campaign_id},
-        )
-        # WB возвращает {'words': {'clusters': [...]}, ...}
+        """Поисковые кластеры по кампании."""
+        data = await self._request("GET", "/adv/v1/stat/words", params={"id": campaign_id})
         if isinstance(data, dict):
             return data.get("words", {}).get("clusters", [])
         return []
 
     async def exclude_keyword(self, campaign_id: int, keyword: str) -> None:
-        """Добавить фразу в минус-слова кампании."""
+        """Добавить фразу в минус-слова."""
         await self._request(
-            "POST",
-            f"/adv/v1/setkeyword",
+            "POST", "/adv/v1/setkeyword",
             json={"advertId": campaign_id, "excluded": [keyword]},
         )
 
     async def restore_keyword(self, campaign_id: int, keyword: str) -> None:
-        """Убрать фразу из минус-слов кампании."""
+        """Убрать фразу из минус-слов."""
         await self._request(
-            "DELETE",
-            f"/adv/v1/setkeyword",
+            "DELETE", "/adv/v1/setkeyword",
             json={"advertId": campaign_id, "excluded": [keyword]},
         )
