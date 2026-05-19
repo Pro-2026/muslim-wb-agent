@@ -19,7 +19,7 @@ class WBClient:
         self._token = token
         self._client = httpx.AsyncClient(
             base_url=BASE_URL,
-            headers={"Authorization": token},
+            headers={"Authorization": f"Bearer {token}"},
             timeout=30,
         )
 
