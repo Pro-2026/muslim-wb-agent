@@ -6,7 +6,7 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://advert-api.wb.ru"
+BASE_URL = "https://advert-api.wildberries.ru"
 _RATE_LIMIT_SLEEP = 1.0
 
 
@@ -50,31 +50,22 @@ class WBClient:
         raise WBApiError("WB API: max retries exceeded")
 
     async def get_campaigns(self) -> list[dict]:
-        """/count уже возвращает ID, тип и статус — больше ничего не нужно."""
-        count_data = await self._request("GET", "/adv/v1/promotion/count")
-
-        campaigns: list[dict] = []
-        for group in count_data.get("adverts", []):
-            adv_type = group.get("type")
-            adv_status = group.get("status")
-            for item in group.get("advert_list", []):
-                campaigns.append({
-                    "advertId": item["advertId"],
-                    "name": f"Кампания {item['advertId']}",
-                    "type": adv_type,
-                    "status": adv_status,
-                })
-
-        return campaigns
+        """GET /adv/v0/adverts — список всех кампаний."""
+        data = await self._request("GET", "/adv/v0/adverts")
+        return data if isinstance(data, list) else []
 
     async def get_campaign_stats(
         self, campaign_id: int, date_from: date, date_to: date
     ) -> list[dict]:
         """Статистика по кампании за период."""
         data = await self._request(
-            "POST",
-            "/adv/v2/fullstats",
-            json=[{"id": campaign_id, "dates": [date_from.isoformat(), date_to.isoformat()]}],
+            "GET",
+            "/adv/v1/fullstat",
+            params={
+                "id": campaign_id,
+                "dateFrom": date_from.isoformat(),
+                "dateTo": date_to.isoformat(),
+            },
         )
         return data if isinstance(data, list) else []
 
