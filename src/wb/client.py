@@ -50,27 +50,20 @@ class WBClient:
         raise WBApiError("WB API: max retries exceeded")
 
     async def get_campaigns(self) -> list[dict]:
-        """
-        Шаг 1: получить все ID кампаний через /count.
-        Шаг 2: получить детали батчами по 50 через POST /adverts.
-        """
+        """/count уже возвращает ID, тип и статус — больше ничего не нужно."""
         count_data = await self._request("GET", "/adv/v1/promotion/count")
 
-        all_ids: list[int] = []
-        for group in count_data.get("adverts", []):
-            for item in group.get("advert_list", []):
-                all_ids.append(item["advertId"])
-
-        if not all_ids:
-            return []
-
         campaigns: list[dict] = []
-        for i in range(0, len(all_ids), 50):
-            batch = all_ids[i:i + 50]
-            data = await self._request("POST", "/adv/v1/promotion/adverts", json=batch)
-            if isinstance(data, list):
-                campaigns.extend(data)
-            await asyncio.sleep(_RATE_LIMIT_SLEEP)
+        for group in count_data.get("adverts", []):
+            adv_type = group.get("type")
+            adv_status = group.get("status")
+            for item in group.get("advert_list", []):
+                campaigns.append({
+                    "advertId": item["advertId"],
+                    "name": f"Кампания {item['advertId']}",
+                    "type": adv_type,
+                    "status": adv_status,
+                })
 
         return campaigns
 
