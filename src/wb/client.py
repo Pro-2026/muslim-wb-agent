@@ -6,7 +6,7 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://advert-api.wildberries.ru"
+BASE_URL = "https://advert-api.wb.ru"
 _RATE_LIMIT_SLEEP = 1.0
 
 
@@ -19,7 +19,7 @@ class WBClient:
         self._token = token
         self._client = httpx.AsyncClient(
             base_url=BASE_URL,
-            headers={"Authorization": f"Bearer {token}"},
+            headers={"Authorization": token},
             timeout=30,
         )
 
