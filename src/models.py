@@ -80,6 +80,8 @@ class DecisionType(str, Enum):
     keep = "keep"
     remove = "remove"
     borderline = "borderline"
+    relevant = "relevant"
+    irrelevant = "irrelevant"
 
 
 class DecisionWho(str, Enum):

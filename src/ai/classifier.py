@@ -1,13 +1,11 @@
-import json
 import logging
-from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
 
 import google.generativeai as genai
 from pydantic import BaseModel, Field
 
 from src.config import settings
+from src.models import DecisionType
 
 logger = logging.getLogger(__name__)
 
@@ -53,15 +51,9 @@ SYSTEM_PROMPT = """Ты — эксперт по рекламе на Wildberries.
 Для каждого кластера вызови функцию classify_keyword."""
 
 
-class Decision(str, Enum):
-    relevant = "relevant"
-    irrelevant = "irrelevant"
-    borderline = "borderline"
-
-
 class KeywordClassification(BaseModel):
     phrase: str
-    decision: Decision
+    decision: DecisionType
     confidence: float = Field(ge=0.0, le=1.0)
     reason: str
 
@@ -102,7 +94,7 @@ async def classify_keywords(
                 results.append(
                     KeywordClassification(
                         phrase=args["phrase"],
-                        decision=Decision(args["decision"]),
+                        decision=DecisionType(args["decision"]),
                         confidence=float(args["confidence"]),
                         reason=args["reason"],
                     )
@@ -116,7 +108,7 @@ async def classify_keywords(
             results.append(
                 KeywordClassification(
                     phrase=kw,
-                    decision=Decision.borderline,
+                    decision=DecisionType.borderline,
                     confidence=0.0,
                     reason="Не удалось классифицировать автоматически",
                 )

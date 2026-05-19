@@ -9,7 +9,7 @@ from fastapi import FastAPI, Request, Response
 from src.bot.setup import bot, dp, setup_bot
 from src.config import settings
 from src.database import Base, engine
-import src.models  # noqa: F401 — register all models with Base
+import src.models  # noqa: F401
 from src.scheduler import setup_scheduler, scheduler
 
 logging.basicConfig(
@@ -47,6 +47,9 @@ async def health() -> dict:
 
 @app.post(settings.webhook_path)
 async def webhook(request: Request) -> Response:
-    update = Update.model_validate(await request.json())
-    await dp.feed_update(bot, update)
-    return Response()
+    try:
+        update = Update.model_validate(await request.json())
+        await dp.feed_update(bot, update)
+    except Exception as e:
+        logger.exception("Webhook processing error: %s", e)
+    return Response()  # всегда 200 чтобы Telegram не ретраил
